@@ -1,0 +1,114 @@
+//@version=5
+strategy("NIFTY 50 Power Signals (Target + Stop Lines)", overlay=true, initial_capital=100000, commission_type=strategy.commission.percent, commission_value=0.02, pyramiding=0, calc_on_order_fills=true, calc_on_every_tick=false)
+
+// ==========================
+// Inputs
+// ==========================
+emaFastLen      = input.int(21, "Fast EMA", minval=1)
+emaSlowLen      = input.int(55, "Slow EMA", minval=1)
+rsiLen          = input.int(14, "RSI Length", minval=2)
+rsiBullLevel    = input.int(55, "RSI Bull Threshold", minval=1, maxval=99)
+rsiBearLevel    = input.int(45, "RSI Bear Threshold", minval=1, maxval=99)
+macdFast        = input.int(12, "MACD Fast", minval=1)
+macdSlow        = input.int(26, "MACD Slow", minval=1)
+macdSignal      = input.int(9, "MACD Signal", minval=1)
+stAtrLen        = input.int(10, "Supertrend ATR Length", minval=1)
+stFactor        = input.float(3.0, "Supertrend Factor", minval=0.5, step=0.1)
+atrLen          = input.int(14, "ATR Length", minval=1)
+slATRMult       = input.float(1.2, "Stop Loss ATR Multiplier", minval=0.2, step=0.1)
+tpATRMult       = input.float(2.4, "Target ATR Multiplier", minval=0.2, step=0.1)
+volumeFilterOn  = input.bool(true, "Use Volume Confirmation")
+volSmaLen       = input.int(20, "Volume SMA Length", minval=1)
+lineExtendBars  = input.int(25, "Line Length (Bars)", minval=5, maxval=300)
+showBackground  = input.bool(true, "Show Trend Background")
+
+// ==========================
+// Core indicators
+// ==========================
+emaFast = ta.ema(close, emaFastLen)
+emaSlow = ta.ema(close, emaSlowLen)
+rsiVal  = ta.rsi(close, rsiLen)
+[macdLine, macdSig, _] = ta.macd(close, macdFast, macdSlow, macdSignal)
+[stLine, stDir] = ta.supertrend(stFactor, stAtrLen)
+atrVal = ta.atr(atrLen)
+volSma = ta.sma(volume, volSmaLen)
+
+bullTrend = emaFast > emaSlow and close > stLine and stDir < 0
+bearTrend = emaFast < emaSlow and close < stLine and stDir > 0
+
+volOk = not volumeFilterOn or volume > volSma
+
+momentumBull = rsiVal > rsiBullLevel and macdLine > macdSig
+momentumBear = rsiVal < rsiBearLevel and macdLine < macdSig
+
+buySignal  = bullTrend and momentumBull and volOk and strategy.position_size == 0
+sellSignal = bearTrend and momentumBear and volOk and strategy.position_size == 0
+
+// ==========================
+// Trade levels
+// ==========================
+longEntry = close
+longSL    = longEntry - atrVal * slATRMult
+longTP    = longEntry + atrVal * tpATRMult
+
+shortEntry = close
+shortSL    = shortEntry + atrVal * slATRMult
+shortTP    = shortEntry - atrVal * tpATRMult
+
+var line entryLine = na
+var line slLine = na
+var line tpLine = na
+var label signalLabel = na
+
+clearOldDrawings() =>
+    if not na(entryLine)
+        line.delete(entryLine)
+    if not na(slLine)
+        line.delete(slLine)
+    if not na(tpLine)
+        line.delete(tpLine)
+    if not na(signalLabel)
+        label.delete(signalLabel)
+
+makeTradeLines(_entry, _sl, _tp, _isLong) =>
+    clearOldDrawings()
+    eColor = color.new(color.yellow, 0)
+    sColor = color.new(color.red, 0)
+    tColor = color.new(color.lime, 0)
+    entryLine := line.new(bar_index, _entry, bar_index + lineExtendBars, _entry, extend=extend.none, width=2, color=eColor)
+    slLine    := line.new(bar_index, _sl, bar_index + lineExtendBars, _sl, extend=extend.none, width=2, color=sColor)
+    tpLine    := line.new(bar_index, _tp, bar_index + lineExtendBars, _tp, extend=extend.none, width=2, color=tColor)
+    signalText = _isLong ? "BUY\nEntry: " + str.tostring(_entry, format.mintick) + "\nSL: " + str.tostring(_sl, format.mintick) + "\nTP: " + str.tostring(_tp, format.mintick) : "SELL\nEntry: " + str.tostring(_entry, format.mintick) + "\nSL: " + str.tostring(_sl, format.mintick) + "\nTP: " + str.tostring(_tp, format.mintick)
+    signalStyle = _isLong ? label.style_label_up : label.style_label_down
+    signalColor = _isLong ? color.new(color.green, 0) : color.new(color.red, 0)
+    yLoc = _isLong ? low : high
+    signalLabel := label.new(bar_index, yLoc, text=signalText, style=signalStyle, textcolor=color.white, color=signalColor, size=size.small)
+
+// ==========================
+// Orders
+// ==========================
+if buySignal
+    strategy.entry("Long", strategy.long)
+    strategy.exit("Long Exit", from_entry="Long", stop=longSL, limit=longTP)
+    makeTradeLines(longEntry, longSL, longTP, true)
+
+if sellSignal
+    strategy.entry("Short", strategy.short)
+    strategy.exit("Short Exit", from_entry="Short", stop=shortSL, limit=shortTP)
+    makeTradeLines(shortEntry, shortSL, shortTP, false)
+
+// ==========================
+// Visuals
+// ==========================
+plot(emaFast, "EMA Fast", color=color.new(color.cyan, 0), linewidth=2)
+plot(emaSlow, "EMA Slow", color=color.new(color.orange, 0), linewidth=2)
+plot(stLine, "Supertrend", color=stDir < 0 ? color.new(color.green, 0) : color.new(color.red, 0), linewidth=2)
+
+bgColor = bullTrend ? color.new(color.green, 92) : bearTrend ? color.new(color.red, 92) : na
+bgcolor(showBackground ? bgColor : na)
+
+plotshape(buySignal,  title="Buy Signal",  style=shape.triangleup,   location=location.belowbar, color=color.new(color.green, 0), text="BUY",  textcolor=color.white, size=size.small)
+plotshape(sellSignal, title="Sell Signal", style=shape.triangledown, location=location.abovebar, color=color.new(color.red, 0),   text="SELL", textcolor=color.white, size=size.small)
+
+alertcondition(buySignal, "NIFTY BUY", "NIFTY 50 BUY signal triggered")
+alertcondition(sellSignal, "NIFTY SELL", "NIFTY 50 SELL signal triggered")
